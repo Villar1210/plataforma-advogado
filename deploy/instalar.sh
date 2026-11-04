@@ -5,7 +5,7 @@
 # Pode ser rodado de novo com segurança: o que já existe é reaproveitado.
 set -euo pipefail
 
-DOMINIO="${DOMINIO:-correspondentes.ivillar.com.br}"
+DOMINIO="${DOMINIO:-plataforma-advogado.ivillar.com.br}"
 PASTA="${PASTA:-/var/www/plataforma-advogado}"
 REPO="https://github.com/Villar1210/plataforma-advogado.git"
 PORTA_API=3340
@@ -120,6 +120,8 @@ EOF
 fi
 
 sed -i "s#^DATABASE_URL=.*#DATABASE_URL=\"$DB_URL\"#" .env
+# mantém o domínio atualizado mesmo se o .env já existia
+sed -i "s#^APP_URL=.*#APP_URL=\"https://$DOMINIO\"#; s#^CORS_ORIGINS=.*#CORS_ORIGINS=\"https://$DOMINIO\"#" .env
 npm ci --no-audit --no-fund
 npx prisma migrate deploy
 npx prisma generate
@@ -161,6 +163,14 @@ verde "API (porta $PORTA_API) e site (porta $PORTA_WEB) no ar"
 
 # ───────────────────────── nginx ─────────────────────────
 passo "Configurando o nginx para $DOMINIO"
+# remove configurações desta plataforma criadas antes com outro domínio
+for f in /etc/nginx/sites-enabled/* /etc/nginx/sites-available/*; do
+  [ -f "$f" ] || continue
+  if grep -q "127.0.0.1:$PORTA_WEB" "$f" && grep -q "127.0.0.1:$PORTA_API" "$f" && ! grep -q "server_name[^;]*$DOMINIO" "$f"; then
+    amarelo "Removendo configuração antiga da plataforma: $f"
+    rm -f "$f"
+  fi
+done
 CONF="/etc/nginx/sites-available/$DOMINIO"
 EXISTENTE=$(grep -rl "server_name[^;]*$DOMINIO" /etc/nginx/sites-enabled/ /etc/nginx/conf.d/ 2>/dev/null | head -1 || true)
 if [ -n "$EXISTENTE" ] && grep -q "location /api/" "$EXISTENTE"; then
@@ -171,7 +181,7 @@ else
     amarelo "Configuração anterior salva em /root (backup) e substituída"
     rm -f "$EXISTENTE"
   fi
-  sed "s/correspondentes.ivillar.com.br/$DOMINIO/g" "$PASTA/deploy/nginx.conf" > "$CONF"
+  sed "s/plataforma-advogado.ivillar.com.br/$DOMINIO/g" "$PASTA/deploy/nginx.conf" > "$CONF"
   ln -sf "$CONF" "/etc/nginx/sites-enabled/$DOMINIO"
 fi
 nginx -t

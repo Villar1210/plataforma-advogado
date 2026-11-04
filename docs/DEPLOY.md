@@ -1,6 +1,6 @@
 # Deploy no VPS (mesmo servidor do gestordevendas)
 
-Subdomínio: `correspondentes.ivillar.com.br` · API na porta **3340** · web na porta **3006**.
+Subdomínio: `plataforma-advogado.ivillar.com.br` · API na porta **3340** · web na porta **3006**.
 
 ## Jeito rápido: instalador automático
 Com o DNS do subdomínio já apontando para o VPS, entre como **root** e rode:
@@ -45,7 +45,7 @@ Depois do seed, apague `SEED_ADMIN_SENHA` do `.env`.
 ## 5. Frontend
 ```bash
 cd /var/www/plataforma-advogado/frontend
-echo 'NEXT_PUBLIC_API_URL=https://correspondentes.ivillar.com.br/api' > .env.production
+echo 'NEXT_PUBLIC_API_URL=https://plataforma-advogado.ivillar.com.br/api' > .env.production
 npm ci
 npm run build
 cp -r .next/static .next/standalone/.next/static
@@ -61,10 +61,10 @@ pm2 save
 
 ## 7. nginx + HTTPS
 ```bash
-cp deploy/nginx.conf /etc/nginx/sites-available/correspondentes.ivillar.com.br
-ln -s /etc/nginx/sites-available/correspondentes.ivillar.com.br /etc/nginx/sites-enabled/
+cp deploy/nginx.conf /etc/nginx/sites-available/plataforma-advogado.ivillar.com.br
+ln -s /etc/nginx/sites-available/plataforma-advogado.ivillar.com.br /etc/nginx/sites-enabled/
 nginx -t && systemctl reload nginx
-certbot --nginx -d correspondentes.ivillar.com.br
+certbot --nginx -d plataforma-advogado.ivillar.com.br
 ```
 
 ## Atualizações
