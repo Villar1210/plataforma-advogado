@@ -1,6 +1,15 @@
 # Deploy no VPS (mesmo servidor do gestordevendas)
 
 Subdomínio: `correspondentes.ivillar.com.br` · API na porta **3340** · web na porta **3006**.
+
+## Jeito rápido: instalador automático
+Com o DNS do subdomínio já apontando para o VPS, entre como **root** e rode:
+```bash
+curl -fsSL https://raw.githubusercontent.com/Villar1210/plataforma-advogado/main/deploy/instalar.sh -o /root/instalar.sh && bash /root/instalar.sh
+```
+Ele cria o banco, baixa o código, pede o nome do escritório e o login do advogado, compila, sobe no PM2, configura o nginx e gera o HTTPS. Pode ser rodado de novo para atualizar.
+
+## Jeito manual
 Antes, confirme que as portas estão livres: `ss -ltnp | grep -E ':3340|:3006'`.
 
 ## 1. DNS
