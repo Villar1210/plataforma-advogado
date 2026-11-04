@@ -1,0 +1,32 @@
+@import 'tailwindcss';
+
+/* Tailwind v4: cores definidas aqui (tailwind.config não é lido) */
+@theme {
+  --color-marca-50: #f2f5fa;
+  --color-marca-100: #e3e9f3;
+  --color-marca-200: #c5d1e5;
+  --color-marca-500: #3d5a8c;
+  --color-marca-600: #2f4a78;
+  --color-marca-700: #253b61;
+  --color-marca-800: #1c2d4b;
+  --color-marca-900: #141f35;
+  --color-ouro-100: #f7efdc;
+  --color-ouro-500: #b8892b;
+  --color-ouro-600: #9a7020;
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+html,
+body {
+  background: #f6f7f9;
+  color: #1f2937;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+input[type='date']::-webkit-calendar-picker-indicator,
+input[type='datetime-local']::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+}
