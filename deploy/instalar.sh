@@ -43,58 +43,43 @@ for p in $PORTA_API $PORTA_WEB; do
 done
 
 # ───────────────────────── banco de dados ─────────────────────────
-passo "Banco de dados PostgreSQL"
-PSQL=""
-DB_HOST="127.0.0.1"
-DB_PORTA=""
-CONTAINER=""
-if command -v docker >/dev/null 2>&1; then
-  LISTA=$(docker ps --format '{{.Names}}|{{.Image}}|{{.Ports}}' 2>/dev/null || true)
-  echo "Containers PostgreSQL encontrados:"
-  echo "$LISTA" | grep -i postgres || echo "  (nenhum)"
-  # prefere o do gestordevendas (porta 5434)
-  CONTAINER=$(echo "$LISTA" | grep -i postgres | grep ':5434->' | head -1 | cut -d'|' -f1 || true)
-  [ -n "$CONTAINER" ] || CONTAINER=$(echo "$LISTA" | grep -i postgres | head -1 | cut -d'|' -f1 || true)
-fi
-if [ -n "$CONTAINER" ]; then
-  PGU=$(docker exec "$CONTAINER" printenv POSTGRES_USER 2>/dev/null || true)
-  [ -n "$PGU" ] || PGU=postgres
-  PSQL="docker exec -i $CONTAINER psql -v ON_ERROR_STOP=1 -U $PGU -d postgres -tA"
-  DB_PORTA=$( (docker port "$CONTAINER" 5432/tcp 2>/dev/null || true) | head -1 | sed 's/.*://')
-  [ -n "$DB_PORTA" ] || erro "o container $CONTAINER não publica a porta 5432 no servidor"
-  verde "Usando o PostgreSQL do container '$CONTAINER' (usuário $PGU, porta $DB_PORTA)"
-elif id postgres >/dev/null 2>&1 && command -v psql >/dev/null 2>&1; then
-  DB_PORTA=$( (su - postgres -c "psql -tAc 'show port'" 2>/dev/null || true) | tr -d ' ')
-  [ -n "$DB_PORTA" ] || DB_PORTA=5432
-  PSQL="su - postgres -c 'psql -v ON_ERROR_STOP=1 -p $DB_PORTA -tA'"
-  verde "Usando o PostgreSQL instalado no servidor (porta $DB_PORTA)"
-else
-  erro "não encontrei PostgreSQL (nem container Docker, nem instalado). Mande o resultado de: docker ps; systemctl status postgresql"
-fi
-echo "Testando acesso ao banco..."
-TESTE=$(eval "$PSQL" <<<"select 1" 2>&1 || true)
-[ "$(echo "$TESTE" | tr -d '[:space:]')" = "1" ] || erro "não consegui entrar no PostgreSQL: $TESTE"
-verde "Acesso ao PostgreSQL ok"
-
-rodar_sql() { eval "$PSQL" <<<"$1"; }
-
+passo "Banco de dados PostgreSQL (container próprio, isolado dos outros projetos)"
+command -v docker >/dev/null 2>&1 || erro "Docker não encontrado"
+DB_CONTAINER="advogado-db"
+DB_PORTA=5441
+SENHA_ARQ="/root/.advogado-db-senha"
 ENV_BACK="$PASTA/backend/.env"
-if [ -f "$ENV_BACK" ] && grep -q '^DATABASE_URL=' "$ENV_BACK"; then
-  amarelo "Já existe $ENV_BACK — mantendo o banco e as senhas atuais"
-  DB_URL=$(grep '^DATABASE_URL=' "$ENV_BACK" | cut -d= -f2- | tr -d '"')
-else
-  DB_SENHA=$(openssl rand -hex 16)
-  if [ "$(rodar_sql "select 1 from pg_roles where rolname='$DB_USER'")" = "1" ]; then
-    rodar_sql "alter user $DB_USER with password '$DB_SENHA'" >/dev/null
+
+if docker ps -a --format '{{.Names}}' | grep -qx "$DB_CONTAINER"; then
+  docker start "$DB_CONTAINER" >/dev/null
+  verde "Container $DB_CONTAINER já existe — reaproveitando"
+  if [ -f "$SENHA_ARQ" ]; then
+    DB_SENHA=$(cat "$SENHA_ARQ")
+  elif [ -f "$ENV_BACK" ]; then
+    DB_SENHA=$(grep '^DATABASE_URL=' "$ENV_BACK" | sed -E 's#.*://[^:]+:([^@]+)@.*#\1#')
   else
-    rodar_sql "create user $DB_USER with password '$DB_SENHA'" >/dev/null
+    erro "o container $DB_CONTAINER existe mas a senha se perdeu. Remova com: docker rm -f $DB_CONTAINER && docker volume rm advogado-db-data  (e rode de novo)"
   fi
-  if [ "$(rodar_sql "select 1 from pg_database where datname='$DB_NOME'")" != "1" ]; then
-    rodar_sql "create database $DB_NOME owner $DB_USER" >/dev/null
-  fi
-  DB_URL="postgresql://$DB_USER:$DB_SENHA@$DB_HOST:$DB_PORTA/$DB_NOME"
-  verde "Banco $DB_NOME e usuário $DB_USER prontos"
+else
+  if ss -ltnH "( sport = :$DB_PORTA )" | grep -q .; then erro "a porta $DB_PORTA já está em uso"; fi
+  DB_SENHA=$(openssl rand -hex 16)
+  echo "$DB_SENHA" > "$SENHA_ARQ"; chmod 600 "$SENHA_ARQ"
+  docker run -d --name "$DB_CONTAINER" --restart unless-stopped \
+    -e POSTGRES_USER="$DB_USER" -e POSTGRES_PASSWORD="$DB_SENHA" -e POSTGRES_DB="$DB_NOME" \
+    -p 127.0.0.1:$DB_PORTA:5432 -v advogado-db-data:/var/lib/postgresql/data \
+    postgres:16-alpine >/dev/null
+  verde "Container $DB_CONTAINER criado (porta $DB_PORTA, só acessível de dentro do servidor)"
 fi
+
+echo -n "Aguardando o banco ficar pronto"
+for i in $(seq 1 60); do
+  if docker exec "$DB_CONTAINER" pg_isready -h 127.0.0.1 -U "$DB_USER" -d "$DB_NOME" >/dev/null 2>&1; then break; fi
+  echo -n "."; sleep 1
+  [ "$i" = 60 ] && { echo; erro "o banco não iniciou. Veja: docker logs $DB_CONTAINER"; }
+done
+echo
+DB_URL="postgresql://$DB_USER:$DB_SENHA@127.0.0.1:$DB_PORTA/$DB_NOME"
+verde "Banco pronto"
 
 # ───────────────────────── código ─────────────────────────
 passo "Baixando o código"
@@ -134,6 +119,7 @@ EOF
   chmod 600 .env
 fi
 
+sed -i "s#^DATABASE_URL=.*#DATABASE_URL=\"$DB_URL\"#" .env
 npm ci --no-audit --no-fund
 npx prisma migrate deploy
 npx prisma generate
