@@ -17,6 +17,7 @@ verde() { printf '\033[1;32m%s\033[0m\n' "$*"; }
 amarelo() { printf '\033[1;33m%s\033[0m\n' "$*"; }
 erro() { printf '\033[1;31mERRO: %s\033[0m\n' "$*" >&2; exit 1; }
 passo() { printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
+trap 'printf "\033[1;31mERRO na linha %s: %s\033[0m\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
 [ "$(id -u)" = "0" ] || erro "rode como root (entre com: su -   ou   ssh root@...)"
 
@@ -46,22 +47,34 @@ passo "Banco de dados PostgreSQL"
 PSQL=""
 DB_HOST="127.0.0.1"
 DB_PORTA=""
-# Prefere o container do gestordevendas (porta 5434); senão, o primeiro PostgreSQL encontrado.
-CONTAINER=$(docker ps --format '{{.Names}} {{.Image}} {{.Ports}}' 2>/dev/null | awk '$2 ~ /postgres/ && $0 ~ /:5434->/ {print $1; exit}' || true)
-[ -n "$CONTAINER" ] || CONTAINER=$(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null | awk '$2 ~ /postgres/ {print $1; exit}' || true)
+CONTAINER=""
+if command -v docker >/dev/null 2>&1; then
+  LISTA=$(docker ps --format '{{.Names}}|{{.Image}}|{{.Ports}}' 2>/dev/null || true)
+  echo "Containers PostgreSQL encontrados:"
+  echo "$LISTA" | grep -i postgres || echo "  (nenhum)"
+  # prefere o do gestordevendas (porta 5434)
+  CONTAINER=$(echo "$LISTA" | grep -i postgres | grep ':5434->' | head -1 | cut -d'|' -f1 || true)
+  [ -n "$CONTAINER" ] || CONTAINER=$(echo "$LISTA" | grep -i postgres | head -1 | cut -d'|' -f1 || true)
+fi
 if [ -n "$CONTAINER" ]; then
-  PGU=$(docker exec "$CONTAINER" printenv POSTGRES_USER 2>/dev/null || echo postgres)
+  PGU=$(docker exec "$CONTAINER" printenv POSTGRES_USER 2>/dev/null || true)
+  [ -n "$PGU" ] || PGU=postgres
   PSQL="docker exec -i $CONTAINER psql -v ON_ERROR_STOP=1 -U $PGU -d postgres -tA"
-  DB_PORTA=$(docker port "$CONTAINER" 5432/tcp 2>/dev/null | head -1 | sed 's/.*://')
+  DB_PORTA=$( (docker port "$CONTAINER" 5432/tcp 2>/dev/null || true) | head -1 | sed 's/.*://')
   [ -n "$DB_PORTA" ] || erro "o container $CONTAINER não publica a porta 5432 no servidor"
-  verde "Usando o PostgreSQL do container '$CONTAINER' (porta $DB_PORTA)"
-elif id postgres >/dev/null 2>&1 && command -v psql >/dev/null; then
-  DB_PORTA=$(su - postgres -c "psql -tAc 'show port'" 2>/dev/null || echo 5432)
+  verde "Usando o PostgreSQL do container '$CONTAINER' (usuário $PGU, porta $DB_PORTA)"
+elif id postgres >/dev/null 2>&1 && command -v psql >/dev/null 2>&1; then
+  DB_PORTA=$( (su - postgres -c "psql -tAc 'show port'" 2>/dev/null || true) | tr -d ' ')
+  [ -n "$DB_PORTA" ] || DB_PORTA=5432
   PSQL="su - postgres -c 'psql -v ON_ERROR_STOP=1 -p $DB_PORTA -tA'"
   verde "Usando o PostgreSQL instalado no servidor (porta $DB_PORTA)"
 else
-  erro "não encontrei PostgreSQL (nem container Docker, nem instalado)"
+  erro "não encontrei PostgreSQL (nem container Docker, nem instalado). Mande o resultado de: docker ps; systemctl status postgresql"
 fi
+echo "Testando acesso ao banco..."
+TESTE=$(eval "$PSQL" <<<"select 1" 2>&1 || true)
+[ "$(echo "$TESTE" | tr -d '[:space:]')" = "1" ] || erro "não consegui entrar no PostgreSQL: $TESTE"
+verde "Acesso ao PostgreSQL ok"
 
 rodar_sql() { eval "$PSQL" <<<"$1"; }
 
