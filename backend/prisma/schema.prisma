@@ -1,0 +1,477 @@
+// Plataforma de Correspondentes Jurídicos
+// Modelo pensado para as 3 fases:
+//   Fase 1 — uso interno do escritório (correspondentes próprios, envio direto)
+//   Fase 2 — escala (importação, avaliação, equipe, agente WhatsApp)
+//   Fase 3 — SaaS/marketplace (cadastro aberto, propostas públicas, pagamento com split)
+// Regra de ouro: toda tabela de dados do escritório carrega tenantId.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["queryCompiler", "driverAdapters"]
+  engineType      = "client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────── Escritório (tenant) e usuários ─────────────────────────
+
+enum TenantStatus {
+  ATIVO
+  SUSPENSO
+  CANCELADO
+}
+
+model Tenant {
+  id         String       @id @default(cuid())
+  nome       String
+  slug       String       @unique
+  documento  String? // CNPJ ou CPF
+  oab        String?
+  email      String?
+  telefone   String?
+  status     TenantStatus @default(ATIVO)
+  // Fase 3: cadastro aberto + plano
+  assinatura Assinatura?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  usuarios         Usuario[]
+  correspondentes  TenantCorrespondente[]
+  demandas         Demanda[]
+  notificacoes     Notificacao[]
+  importacoes      ImportacaoLote[]
+  contadorDemandas Int                    @default(0)
+}
+
+enum Papel {
+  ADMIN // dono do escritório
+  ADVOGADO
+  ASSISTENTE
+}
+
+model Usuario {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  nome        String
+  email       String   @unique
+  senhaHash   String
+  papel       Papel    @default(ADVOGADO)
+  ativo       Boolean  @default(true)
+  superAdmin  Boolean  @default(false) // administrador da plataforma (Fase 3)
+  whatsapp    String?
+  ultimoLogin DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  demandasCriadas Demanda[]         @relation("DemandaCriador")
+  eventos         DemandaEvento[]
+  notificacoes    Notificacao[]
+  anexos          Anexo[]
+
+  @@index([tenantId])
+}
+
+// ───────────────────────── Catálogos ─────────────────────────
+
+model Cidade {
+  id     Int    @id // código IBGE
+  nome   String
+  uf     String @db.Char(2)
+  // nome sem acento, minúsculo, para busca
+  busca  String
+
+  areas    AreaAtendimento[]
+  demandas Demanda[]
+
+  @@index([busca])
+  @@index([uf])
+}
+
+model Servico {
+  id               Int     @id @default(autoincrement())
+  nome             String  @unique
+  grupo            String
+  prazoObrigatorio Boolean @default(false)
+  // itens que o correspondente deve entregar (ex.: "Ata da audiência")
+  checklist        Json    @default("[]")
+  ativo            Boolean @default(true)
+
+  demandas        Demanda[]
+  correspondentes CorrespondenteServico[]
+}
+
+// ───────────────────────── Correspondentes ─────────────────────────
+// O correspondente é GLOBAL (Fase 3: um cadastro atende vários escritórios).
+// O vínculo com cada escritório fica em TenantCorrespondente.
+
+enum OrigemCadastro {
+  ESCRITORIO // cadastrado por um escritório (Fase 1)
+  AUTOCADASTRO // cadastrou-se sozinho no marketplace (Fase 3)
+  IMPORTACAO // planilha (Fase 2)
+}
+
+model Correspondente {
+  id            String         @id @default(cuid())
+  nome          String
+  email         String?
+  whatsapp      String // só dígitos, com DDI: 5511999999999
+  ehAdvogado    Boolean        @default(false)
+  oab           String?
+  oabUf         String?        @db.Char(2)
+  oabValidada   Boolean        @default(false) // Fase 3: validação no CNA
+  cpfCnpj       String?
+  pixTipo       String? // CPF, CNPJ, EMAIL, TELEFONE, ALEATORIA
+  pixChave      String?
+  bio           String?
+  origem        OrigemCadastro @default(ESCRITORIO)
+  senhaHash     String? // Fase 3: login do correspondente
+  ativo         Boolean        @default(true)
+  // métricas calculadas (Fase 2)
+  notaMedia     Float?
+  totalAvaliacoes Int          @default(0)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  vinculos  TenantCorrespondente[]
+  areas     AreaAtendimento[]
+  servicos  CorrespondenteServico[]
+  envios    Envio[]
+  demandas  Demanda[]
+  avaliacoes Avaliacao[]
+  eventos   DemandaEvento[]
+  anexos    Anexo[]
+
+  @@index([whatsapp])
+  @@index([email])
+}
+
+model TenantCorrespondente {
+  id               String         @id @default(cuid())
+  tenantId         String
+  tenant           Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  correspondenteId String
+  correspondente   Correspondente @relation(fields: [correspondenteId], references: [id], onDelete: Cascade)
+  favorito         Boolean        @default(false)
+  valorReferencia  Decimal?       @db.Decimal(12, 2)
+  observacoes      String?
+  bloqueado        Boolean        @default(false)
+  createdAt        DateTime       @default(now())
+
+  @@unique([tenantId, correspondenteId])
+  @@index([tenantId])
+}
+
+model AreaAtendimento {
+  id               String         @id @default(cuid())
+  correspondenteId String
+  correspondente   Correspondente @relation(fields: [correspondenteId], references: [id], onDelete: Cascade)
+  cidadeId         Int
+  cidade           Cidade         @relation(fields: [cidadeId], references: [id])
+
+  @@unique([correspondenteId, cidadeId])
+  @@index([cidadeId])
+}
+
+model CorrespondenteServico {
+  correspondenteId String
+  correspondente   Correspondente @relation(fields: [correspondenteId], references: [id], onDelete: Cascade)
+  servicoId        Int
+  servico          Servico        @relation(fields: [servicoId], references: [id])
+
+  @@id([correspondenteId, servicoId])
+}
+
+// ───────────────────────── Demandas ─────────────────────────
+
+enum DemandaStatus {
+  RASCUNHO
+  AGUARDANDO // enviada, aguardando aceite ou propostas
+  ACEITA
+  EM_EXECUCAO
+  COMPROVANTE_ENVIADO
+  APROVADA // aguardando pagamento
+  PAGA // encerrada
+  CANCELADA
+}
+
+enum ModoContratacao {
+  DIRETO // escritório escolhe e envia para correspondentes da sua base (Fase 1)
+  PROPOSTAS // envia para vários; cada um responde com proposta (Fase 1/2)
+  MARKETPLACE // publicada para todos os correspondentes da cidade (Fase 3)
+}
+
+enum TipoCorrespondente {
+  TODOS
+  APENAS_ADVOGADOS
+}
+
+model Demanda {
+  id                 String             @id @default(cuid())
+  numero             Int // sequencial por escritório
+  tenantId           String
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  criadoPorId        String?
+  criadoPor          Usuario?           @relation("DemandaCriador", fields: [criadoPorId], references: [id], onDelete: SetNull)
+  cidadeId           Int
+  cidade             Cidade             @relation(fields: [cidadeId], references: [id])
+  servicoId          Int?
+  servico            Servico?           @relation(fields: [servicoId], references: [id])
+  servicoTexto       String? // quando o serviço não está no catálogo
+  tipoCorrespondente TipoCorrespondente @default(TODOS)
+  modo               ModoContratacao    @default(DIRETO)
+
+  processoNumero String?
+  partes         String?
+  orgao          String? // vara, fórum, cartório, delegacia
+  local          String? // endereço
+  prazo          DateTime?
+  valor          Decimal?  @db.Decimal(12, 2) // valor oferecido
+  descricao      String
+  instrucoes     String? // o que deve ser entregue
+
+  status           DemandaStatus   @default(RASCUNHO)
+  correspondenteId String? // quem executa
+  correspondente   Correspondente? @relation(fields: [correspondenteId], references: [id], onDelete: SetNull)
+  valorAcordado    Decimal?        @db.Decimal(12, 2)
+
+  entregaObservacao String?
+  entregueEm        DateTime?
+  devolucaoMotivo   String?
+  aprovadaEm        DateTime?
+  canceladaEm       DateTime?
+  motivoCancelamento String?
+
+  // lembretes já disparados (ex.: "d-1", "h-2", "atrasada")
+  lembretesEnviados String[] @default([])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  envios     Envio[]
+  anexos     Anexo[]
+  eventos    DemandaEvento[]
+  pagamento  Pagamento?
+  avaliacao  Avaliacao?
+
+  @@unique([tenantId, numero])
+  @@index([tenantId, status])
+  @@index([cidadeId, status])
+  @@index([prazo])
+}
+
+enum EnvioStatus {
+  ENVIADO
+  VISUALIZADO
+  ACEITO
+  PROPOSTA // respondeu com valor (modo PROPOSTAS/MARKETPLACE)
+  RECUSADO
+  CANCELADO // outro foi escolhido ou demanda cancelada
+}
+
+// Um envio = a demanda chegando a um correspondente.
+// O token é o acesso do correspondente ao portal (link sem senha).
+model Envio {
+  id               String         @id @default(cuid())
+  demandaId        String
+  demanda          Demanda        @relation(fields: [demandaId], references: [id], onDelete: Cascade)
+  correspondenteId String
+  correspondente   Correspondente @relation(fields: [correspondenteId], references: [id], onDelete: Cascade)
+  token            String         @unique
+  status           EnvioStatus    @default(ENVIADO)
+  valorProposto    Decimal?       @db.Decimal(12, 2)
+  mensagem         String?
+  motivoRecusa     String?
+  visualizadoEm    DateTime?
+  respondidoEm     DateTime?
+  createdAt        DateTime       @default(now())
+
+  @@unique([demandaId, correspondenteId])
+  @@index([correspondenteId])
+}
+
+enum AnexoTipo {
+  DOCUMENTO_PROCESSO
+  PROCURACAO
+  SUBSTABELECIMENTO
+  COMPROVANTE_ENTREGA
+  COMPROVANTE_PAGAMENTO
+  OUTRO
+}
+
+model Anexo {
+  id                       String          @id @default(cuid())
+  demandaId                String
+  demanda                  Demanda         @relation(fields: [demandaId], references: [id], onDelete: Cascade)
+  tipo                     AnexoTipo
+  nomeArquivo              String
+  caminho                  String // relativo à pasta de uploads
+  mime                     String
+  tamanho                  Int
+  enviadoPorUsuarioId      String?
+  enviadoPorUsuario        Usuario?        @relation(fields: [enviadoPorUsuarioId], references: [id], onDelete: SetNull)
+  enviadoPorCorrespondenteId String?
+  enviadoPorCorrespondente Correspondente? @relation(fields: [enviadoPorCorrespondenteId], references: [id], onDelete: SetNull)
+  createdAt                DateTime        @default(now())
+
+  pagamento Pagamento?
+
+  @@index([demandaId])
+}
+
+model DemandaEvento {
+  id                     String          @id @default(cuid())
+  demandaId              String
+  demanda                Demanda         @relation(fields: [demandaId], references: [id], onDelete: Cascade)
+  tipo                   String // CRIADA, ENVIADA, VISUALIZADA, ACEITA, RECUSADA, PROPOSTA, ...
+  descricao              String
+  autorUsuarioId         String?
+  autorUsuario           Usuario?        @relation(fields: [autorUsuarioId], references: [id], onDelete: SetNull)
+  autorCorrespondenteId  String?
+  autorCorrespondente    Correspondente? @relation(fields: [autorCorrespondenteId], references: [id], onDelete: SetNull)
+  dados                  Json?
+  createdAt              DateTime        @default(now())
+
+  @@index([demandaId, createdAt])
+}
+
+// ───────────────────────── Pagamento e avaliação ─────────────────────────
+
+enum PagamentoStatus {
+  PENDENTE
+  PAGO
+  CANCELADO
+}
+
+enum MetodoPagamento {
+  PIX
+  TED
+  BOLETO
+  DINHEIRO
+  PLATAFORMA // Fase 3: pago via gateway com split
+}
+
+model Pagamento {
+  id           String          @id @default(cuid())
+  demandaId    String          @unique
+  demanda      Demanda         @relation(fields: [demandaId], references: [id], onDelete: Cascade)
+  valor        Decimal         @db.Decimal(12, 2)
+  vencimento   DateTime?
+  status       PagamentoStatus @default(PENDENTE)
+  metodo       MetodoPagamento?
+  pagoEm       DateTime?
+  comprovanteId String?        @unique
+  comprovante  Anexo?          @relation(fields: [comprovanteId], references: [id], onDelete: SetNull)
+  // Fase 3 (gateway com split)
+  gateway      String?
+  gatewayId    String?
+  taxaPlataforma Decimal?      @db.Decimal(12, 2)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+}
+
+model Avaliacao {
+  id               String         @id @default(cuid())
+  demandaId        String         @unique
+  demanda          Demanda        @relation(fields: [demandaId], references: [id], onDelete: Cascade)
+  correspondenteId String
+  correspondente   Correspondente @relation(fields: [correspondenteId], references: [id], onDelete: Cascade)
+  nota             Int // 1 a 5
+  noPrazo          Boolean        @default(true)
+  comentario       String?
+  createdAt        DateTime       @default(now())
+
+  @@index([correspondenteId])
+}
+
+// ───────────────────────── Notificações e mensagens ─────────────────────────
+
+model Notificacao {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  usuarioId String? // null = todos do escritório
+  usuario   Usuario? @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  titulo    String
+  mensagem  String
+  link      String?
+  lida      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, lida])
+}
+
+// Fila de mensagens de WhatsApp. Na Fase 1 gera link wa.me;
+// na Fase 2 um provedor (Chatwoot/API oficial) envia automaticamente.
+enum MensagemStatus {
+  PENDENTE
+  ENVIADA
+  ERRO
+  MANUAL // usuário enviou pelo link wa.me
+}
+
+model MensagemSaida {
+  id        String         @id @default(cuid())
+  tenantId  String
+  demandaId String?
+  destino   String // número com DDI
+  texto     String
+  status    MensagemStatus @default(PENDENTE)
+  provedor  String         @default("link")
+  erro      String?
+  enviadaEm DateTime?
+  createdAt DateTime       @default(now())
+
+  @@index([status])
+}
+
+// ───────────────────────── Fase 2: importação ─────────────────────────
+
+model ImportacaoLote {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tipo      String // DEMANDAS | CORRESPONDENTES
+  arquivo   String
+  total     Int      @default(0)
+  sucesso   Int      @default(0)
+  erros     Json     @default("[]")
+  createdAt DateTime @default(now())
+}
+
+// ───────────────────────── Fase 3: planos e assinatura ─────────────────────────
+
+model Plano {
+  id              String       @id @default(cuid())
+  nome            String       @unique
+  precoMensal     Decimal      @db.Decimal(10, 2)
+  limiteDemandas  Int? // por mês; null = ilimitado
+  limiteUsuarios  Int?
+  recursos        Json         @default("[]")
+  ativo           Boolean      @default(true)
+  assinaturas     Assinatura[]
+}
+
+enum AssinaturaStatus {
+  TRIAL
+  ATIVA
+  INADIMPLENTE
+  CANCELADA
+  CORTESIA // uso interno (o escritório piloto)
+}
+
+model Assinatura {
+  id              String           @id @default(cuid())
+  tenantId        String           @unique
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  planoId         String
+  plano           Plano            @relation(fields: [planoId], references: [id])
+  status          AssinaturaStatus @default(TRIAL)
+  inicio          DateTime         @default(now())
+  proximaCobranca DateTime?
+  gateway         String?
+  gatewayId       String?
+}
